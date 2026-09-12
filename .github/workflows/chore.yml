@@ -1,0 +1,73 @@
+name: EasyTier Chore
+
+on:
+  release:
+    types: [published, released, edited]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to sync (for manual re-run)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  update-magisk-update-json:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.release.prerelease == false && github.event.release.draft == false)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Resolve tag
+        id: resolve
+        env:
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${EVENT_TAG:-${INPUT_TAG}}"
+          if [ -z "$tag" ]; then
+            echo "no tag resolved"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Update magisk_update.json
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          magisk_update_json="easytier-contrib/easytier-magisk/magisk_update.json"
+          current_version=$(jq -r '.version // empty' "$magisk_update_json")
+
+          if [ "$current_version" = "$TAG" ]; then
+            echo "already at $TAG, nothing to do"
+            exit 0
+          fi
+
+          commit_count=$(git rev-list --count HEAD)
+          version_code=$((commit_count + 1))
+          expected_zip_url="https://github.com/${REPO}/releases/download/${TAG}/Easytier-Magisk-${TAG}.zip"
+
+          jq --arg ver "$TAG" \
+             --argjson code "$version_code" \
+             --arg url "$expected_zip_url" \
+             '.version = $ver | .versionCode = $code | .zipUrl = $url' \
+             "$magisk_update_json" > "${magisk_update_json}.tmp" \
+            && mv "${magisk_update_json}.tmp" "$magisk_update_json"
+
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add "$magisk_update_json"
+
+          git commit -m "chore(magisk): Update magisk_update.json for ${TAG}"
+          git fetch origin main
+          git rebase origin/main
+          git push origin HEAD:main
